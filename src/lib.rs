@@ -18,10 +18,7 @@
 //!     - Only one RX/TX operation at a time, if another operation is attempted while one is in progress then [smoltcp::Error::Illegal] will be returned
 //!     - smoltcp will always be requested to perform checksum checking on behalf of the ENC28J60 device
 
-use core::{
-    cell::{RefCell, RefMut},
-    ops::{Deref, DerefMut},
-};
+use core::cell::{RefCell, RefMut};
 
 use embedded_hal::blocking;
 use embedded_hal::digital::v2::OutputPin;
@@ -120,49 +117,58 @@ where
         }
     }
 
-    fn lock(&self) -> Option<SharedBuffer> {
-        self.buffer.try_borrow_mut().ok().map(SharedBuffer::new)
+    fn lock(&self) -> Option<SharedBuffer<Spi, Ncs, Int, Reset>> {
+        let device = self.device.try_borrow_mut().ok();
+        let buffer = self.buffer.try_borrow_mut().ok();
+
+        if let Some(device) = device {
+            if let Some(buffer) = buffer {
+                return Some(SharedBuffer::new(device, buffer));
+            }
+        }
+
+        None
     }
 
-    fn send(&self, buffer: SharedBuffer) -> Result<()> {
-        let mut device = self.device.borrow_mut();
-
-        match device.transmit(buffer.as_slice()) {
+    fn send(&self, mut buffer: SharedBuffer<Spi, Ncs, Int, Reset>) -> Result<()> {
+        match buffer.device.transmit(buffer.buffer.as_slice()) {
             Ok(_) => Ok(()),
             Err(_) => Err(Error::Illegal),
         }
     }
 
-    fn receive(&self, buffer: &mut SharedBuffer) -> Result<()> {
-        let mut device = self.device.borrow_mut();
-        device
-            .receive(buffer.as_mut_slice())
+    fn receive(&self, buffer: &mut SharedBuffer<Spi, Ncs, Int, Reset>) -> Result<()> {
+        buffer
+            .device
+            .receive(buffer.buffer.as_mut_slice())
             .map(|_| ())
             .map_err(|_| Error::Illegal)
     }
 }
 
-struct SharedBuffer<'a> {
+struct SharedBuffer<'a, Spi, Ncs, Int, Reset>
+where
+    Spi: blocking::spi::Transfer<u8> + blocking::spi::Write<u8>,
+    Ncs: OutputPin,
+    Int: enc28j60::IntPin,
+    Reset: enc28j60::ResetPin,
+{
+    device: RefMut<'a, Enc28j60<Spi, Ncs, Int, Reset>>,
     buffer: RefMut<'a, [u8; BUFFER_SIZE]>,
 }
 
-impl<'a> SharedBuffer<'a> {
-    fn new(buffer: RefMut<'a, [u8; BUFFER_SIZE]>) -> Self {
-        SharedBuffer { buffer }
-    }
-}
-
-impl<'a> Deref for SharedBuffer<'a> {
-    type Target = RefMut<'a, [u8; BUFFER_SIZE]>;
-
-    fn deref(&self) -> &Self::Target {
-        &self.buffer
-    }
-}
-
-impl<'a> DerefMut for SharedBuffer<'a> {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.buffer
+impl<'a, Spi, Ncs, Int, Reset> SharedBuffer<'a, Spi, Ncs, Int, Reset>
+where
+    Spi: blocking::spi::Transfer<u8> + blocking::spi::Write<u8>,
+    Ncs: OutputPin,
+    Int: enc28j60::IntPin,
+    Reset: enc28j60::ResetPin,
+{
+    fn new(
+        device: RefMut<'a, Enc28j60<Spi, Ncs, Int, Reset>>,
+        buffer: RefMut<'a, [u8; BUFFER_SIZE]>,
+    ) -> Self {
+        SharedBuffer { device, buffer }
     }
 }
 
@@ -193,7 +199,7 @@ where
             None => Err(smoltcp::Error::Exhausted),
             Some(mut buffer) => {
                 self.lower.receive(&mut buffer)?;
-                f(buffer.as_mut_slice())
+                f(buffer.buffer.as_mut_slice())
             }
         }
     }
@@ -234,7 +240,7 @@ where
         match buffer {
             None => Err(smoltcp::Error::Exhausted),
             Some(mut buffer) => {
-                let result = f(buffer.as_mut_slice());
+                let result = f(buffer.buffer.as_mut_slice());
                 self.lower.send(buffer)?;
                 result
             }
