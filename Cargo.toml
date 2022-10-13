@@ -1,0 +1,9 @@
+[package]
+name = "smoltcp-enc28j60"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+embedded-hal = "0.2.7"
+enc28j60 = { git = "https://github.com/sbaudlr/enc28j60", branch = "main" }
+smoltcp = "0.8.1"
